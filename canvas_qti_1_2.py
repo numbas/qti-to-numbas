@@ -1,5 +1,7 @@
 from bs4 import BeautifulSoup
 import re
+from urllib.parse import urlparse, unquote
+from pathlib import PurePath
 
 class QTIException(Exception):
     pass
@@ -42,7 +44,7 @@ class Question(object):
         # Question-type specific behaviour
         question_types = {
             'multiple_choice_question': self.multiple_choice_question,
-            'true_false_question': self.multiple_choice_question,
+            'true_false_question': self.true_false_question,
             'short_answer_question': self.short_answer_question,
             'fill_in_multiple_blanks_question': self.fill_in_multiple_blanks_question,
             'multiple_answers_question': self.multiple_answers_question,
@@ -90,6 +92,7 @@ class Question(object):
         part = self.part
         
         part['type'] = '1_n_2'
+        part['shuffleChoices'] = True
         
         choices, feedback = self.get_choices()
         
@@ -110,14 +113,20 @@ class Question(object):
         part['choices'] = [c['content'] for c in choices]
         part['distractors'] = [c['distractor'] for c in choices]
         part['matrix'] = [c['marks'] for c in choices]
+
+    def true_false_question(self):
+        self.multiple_choice_question()
+        self.part['shuffleChoices'] = False
         
     def short_answer_question(self):
         item = self.item
         part = self.part
         part['type'] = 'patternmatch'
         
-        rc = item.select_one('resprocessing respcondition')
-        answers = [v.string for v in rc.select('conditionvar varequal')]
+        for rc in item.select('resprocessing respcondition'):
+            setvar = rc.find('setvar',varname='SCORE')
+            if setvar and setvar.string == '100':
+                answers = [v.string for v in rc.select('conditionvar varequal')]
 
         part['answer'] = answers[0]
         if len(answers)>0:
@@ -183,6 +192,7 @@ class Question(object):
         
         part['type'] = 'm_n_2'
         part['markingMethod'] = 'all-or-nothing'
+        part['shuffleChoices'] = True
         
         choices, feedback = self.get_choices()
 
@@ -204,13 +214,15 @@ class Question(object):
         responses = {}
         for c in item.select('resprocessing respcondition'):
             v = c.select_one('respcondition conditionvar varequal')
-            responses[v['respident']] = v.string
+            if v:
+                responses[v['respident']] = v.string
             
         for r in item.select('presentation response_lid'):
             gapname = r.select_one('material mattext').string
             gap = gapdict[gapname]
             gap['type'] = '1_n_2'
             gap['displayType'] = 'dropdownlist'
+            gap['shuffleChoices'] = True
             choices = {}
             for rl in r.select('render_choice response_label'):
                 ident = rl['ident']
@@ -273,7 +285,7 @@ class Question(object):
                 answer = c.select_one('conditionvar > or > varequal').string
                 p['precision'] = len(answer.replace('.',''))
                 p['minValue'] = p['maxValue'] = answer
-            else:
+            elif c.find('vargte'):
                 p['minValue'] = c.find('vargte').string
                 p['maxValue'] = c.find('varlte').string
                 
@@ -348,12 +360,39 @@ class QTI_1_2_to_Numbas(object):
     def __init__(self, exam, path):
         self.exam = exam
         self.path = path
-        self.process()
+        try:
+            self.process()
+        except Exception as e:
+            print(f"Error when processing Canvas quiz at {path}:")
+            raise e
+
+    def fix_mattext(self, mat):
+        if mat.string is None:
+            return mat
+        soup = BeautifulSoup(mat.string, 'html.parser')
+        for img in soup.find_all('img',class_='equation_image'):
+            img.replace_with('\\(' + img['data-equation-content'] + '\\)')
+        mat.string = str(soup)
         
     def process(self):
         with self.path.open() as f:
             doc = BeautifulSoup(f, 'xml')
-            
+
+        re_ims_cc_filebase = re.compile(r'"\$IMS-CC-FILEBASE\$([^"]*)"')
+
+        resources = self.exam['resources'] = []
+        def replace_filebase(m):
+            _,_,path,_,_,_ = urlparse(m.group(1))
+            p = unquote(path)
+            resources.append(p)
+            return 'resources/'+PurePath(p).name
+
+        for mat in doc.find_all('mattext',string=re_ims_cc_filebase):
+            mat.string = re_ims_cc_filebase.sub(replace_filebase,mat.string)
+
+        for mat in doc.find_all('mattext'):
+            self.fix_mattext(mat)
+
         assessment = doc.find('assessment')
         self.exam['name'] = assessment['title']
         

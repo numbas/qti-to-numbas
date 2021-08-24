@@ -28,8 +28,12 @@ pip install -r requirements.txt
 To convert a package called `question_bank.zip`, run:
 
 ```
-python qti_to_numbas.py question_bank.zip -o question_bank.exam
+python qti_to_numbas.py question_bank.zip
 ```
 
 A .exam file containing all of the questions in the question bank will be created in the current directory.
 You can upload this file to the Numbas editor.
+
+## To do
+
+* Deal with generic/correct/incorrect feedback in Canvas quizzes.
